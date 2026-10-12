@@ -9,6 +9,7 @@ import {
   ALIAS_THINKING_LEVELS,
   VIRTUAL_MODEL_API,
 } from "./types.js";
+import { normalizeAliasName } from "./config.js";
 import type { ModelAlias } from "./types.js";
 
 function targetLabel(target: { provider: string; model: string }): string {
@@ -16,7 +17,11 @@ function targetLabel(target: { provider: string; model: string }): string {
 }
 
 export function createVirtualAlias(alias: ModelAlias): ExtensionVirtualModel {
-  const name = alias.name;
+  const name = normalizeAliasName(alias.name);
+  if (name === undefined) {
+    throw new Error(`Invalid alias name: ${alias.name}`);
+  }
+
   const target = Object.freeze({ ...alias.target });
   const label = targetLabel(target);
 
@@ -111,6 +116,9 @@ export async function reconcileActiveSelection(
 
   if (!destination || !available) {
     return `Alias selection could not move to ${label}: model is missing or unavailable; select another model or restore authentication.`;
+  }
+  if (change.kind !== "remove" && destination.api !== VIRTUAL_MODEL_API) {
+    return `Alias selection could not move to ${label}: replacement is not a virtual model; select another model or reload aliases.`;
   }
   if (change.kind === "remove" && destination.api === VIRTUAL_MODEL_API) {
     return `Alias selection could not move to ${label}: the former target is virtual; select another model.`;

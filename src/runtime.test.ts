@@ -60,6 +60,16 @@ describe("createVirtualAlias", () => {
     expect(virtual.thinkingLevels).toEqual(ALIAS_THINKING_LEVELS);
   });
 
+  it("normalizes valid names and rejects invalid names before registration", () => {
+    const normalized = createVirtualAlias({ ...alias, name: " Smart " });
+
+    expect(normalized.id).toBe("smart");
+    expect(normalized.name).toBe("smart (zai/glm-5.3)");
+    expect(() => createVirtualAlias({ ...alias, name: "bad/name" })).toThrow(
+      /invalid alias name/i,
+    );
+  });
+
   it("routes to the exact available physical target and preserves thinking level", () => {
     const virtual = createVirtualAlias(alias);
     const availableCopy = { ...physicalModel };
@@ -324,6 +334,20 @@ describe("reconcileActiveSelection", () => {
     );
 
     expect(warning).toMatch(/new-name.*unavailable|not found/i);
+    expect(state.setModelCalls).toEqual([]);
+  });
+
+  it("warns when a replacement model at the exact alias ID is not virtual", async () => {
+    const wrongApiReplacement = { ...replacementAliasModel, api: "zhipu" };
+    const state = selectionState(selectedAliasModel, [wrongApiReplacement]);
+
+    const warning = await reconcileActiveSelection(
+      state.pi as never,
+      state.ctx as never,
+      { kind: "rename", before: alias, after: { name: "new-name", target: alias.target } },
+    );
+
+    expect(warning).toMatch(/new-name.*virtual/i);
     expect(state.setModelCalls).toEqual([]);
   });
 
