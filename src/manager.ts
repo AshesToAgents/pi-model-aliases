@@ -328,8 +328,11 @@ export async function runAliasManager(
     }
 
     let runtimeErrors: string[];
+    let runtimeConverged = false;
     try {
-      runtimeErrors = deps.runtime.reconcile(mutation.aliases).errors;
+      const result = deps.runtime.reconcile(mutation.aliases);
+      runtimeErrors = result.errors;
+      runtimeConverged = result.converged;
     } catch (error) {
       runtimeErrors = [errorMessage(error)];
     }
@@ -343,6 +346,7 @@ export async function runAliasManager(
     }
 
     if (
+      runtimeConverged &&
       mutation.change &&
       ctx.model?.provider === ALIAS_PROVIDER &&
       ctx.model.id === mutation.change.before.name

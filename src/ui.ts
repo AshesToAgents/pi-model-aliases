@@ -49,6 +49,7 @@ class SearchPicker<T> implements Component {
     private readonly title: string,
     private readonly items: readonly PickerItem<T>[],
     private readonly done: (value: T | undefined) => void,
+    private readonly diagnostics: readonly string[] = [],
   ) {
     this.input = new Input({ prompt: `${theme.fg("accent", "Search")} ` });
     this.container = new Container();
@@ -127,6 +128,12 @@ class SearchPicker<T> implements Component {
   private rebuild(): void {
     this.container.clear();
     this.container.addChild(new Text(this.theme.fg("accent", this.theme.bold(this.title))));
+    if (this.diagnostics.length > 0) {
+      this.container.addChild(new Text(this.theme.fg("warning", "Configuration diagnostics:")));
+      for (const diagnostic of this.diagnostics) {
+        this.container.addChild(new Text(this.theme.fg("warning", `• ${diagnostic}`)));
+      }
+    }
     this.container.addChild(this.input);
     this.container.addChild(this.list);
     this.container.addChild(
@@ -139,9 +146,10 @@ function customPicker<T>(
   ctx: ExtensionCommandContext,
   title: string,
   items: readonly PickerItem<T>[],
+  diagnostics: readonly string[] = [],
 ): Promise<T | undefined> {
   return ctx.ui.custom<T | undefined>((tui, theme, keybindings, done) => {
-    return new SearchPicker(tui, theme, keybindings, title, items, done);
+    return new SearchPicker(tui, theme, keybindings, title, items, done, diagnostics);
   });
 }
 
@@ -168,7 +176,10 @@ export function createManagerUI(ctx: ExtensionCommandContext): AliasManagerUI {
           };
         }),
       ];
-      return customPicker(ctx, "Manage model aliases", items);
+      const diagnostics = config.diagnostics.map(
+        (diagnostic) => `${diagnostic.path}: ${diagnostic.message}`,
+      );
+      return customPicker(ctx, "Manage model aliases", items, diagnostics);
     },
 
     async selectAction(alias) {
@@ -182,7 +193,7 @@ export function createManagerUI(ctx: ExtensionCommandContext): AliasManagerUI {
       if (value === undefined) return undefined;
 
       const normalized = normalizeAliasName(value);
-      if (normalized !== undefined && normalized !== value) {
+      if (normalized !== undefined) {
         const accepted = await ctx.ui.confirm(title, `Use aliases/${normalized}?`);
         if (!accepted) return undefined;
       }

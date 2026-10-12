@@ -16,6 +16,10 @@ function targetLabel(target: { provider: string; model: string }): string {
   return `${target.provider}/${target.model}`;
 }
 
+function virtualAliasName(alias: ModelAlias): string {
+  return `${alias.name} (${targetLabel(alias.target)})`;
+}
+
 export function createVirtualAlias(alias: ModelAlias): ExtensionVirtualModel {
   const name = normalizeAliasName(alias.name);
   if (name === undefined) {
@@ -28,7 +32,7 @@ export function createVirtualAlias(alias: ModelAlias): ExtensionVirtualModel {
   return {
     provider: ALIAS_PROVIDER,
     id: name,
-    name: `${name} (${label})`,
+    name: virtualAliasName({ name, target }),
     thinkingLevels: ALIAS_THINKING_LEVELS,
     route(request, ctx: ExtensionContext) {
       const model = ctx.modelRegistry.find(target.provider, target.model);
@@ -54,7 +58,7 @@ export function createVirtualAlias(alias: ModelAlias): ExtensionVirtualModel {
   };
 }
 
-export type AliasSyncResult = { errors: string[] };
+export type AliasSyncResult = { errors: string[]; converged: boolean };
 
 type AliasRegistry = Pick<
   ExtensionAPI,
@@ -120,6 +124,12 @@ export async function reconcileActiveSelection(
   if (change.kind !== "remove" && destination.api !== VIRTUAL_MODEL_API) {
     return `Alias selection could not move to ${label}: replacement is not a virtual model; select another model or reload aliases.`;
   }
+  if (
+    change.kind !== "remove" &&
+    destination.name !== virtualAliasName(change.after)
+  ) {
+    return `Alias selection could not move to ${label}: the registered alias still points at a different target; select another model or reload aliases.`;
+  }
   if (change.kind === "remove" && destination.api === VIRTUAL_MODEL_API) {
     return `Alias selection could not move to ${label}: the former target is virtual; select another model.`;
   }
@@ -172,13 +182,11 @@ export class AliasRuntime {
           this.registered.set(name, next);
         }
       }
-    } catch (error) {
-      errors.push(errorMessage(error));
-      const full = this.reconcileFully(aliases);
-      errors.push(...full.errors);
+    } catch {
+      return this.reconcileFully(aliases);
     }
 
-    return { errors };
+    return { errors: [], converged: true };
   }
 
   reconcileFully(aliases: readonly ModelAlias[]): AliasSyncResult {
@@ -203,7 +211,7 @@ export class AliasRuntime {
       }
     }
 
-    return { errors };
+    return { errors, converged: errors.length === 0 };
   }
 
   snapshot(): readonly ModelAlias[] {

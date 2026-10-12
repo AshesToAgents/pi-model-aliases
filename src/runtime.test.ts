@@ -108,6 +108,7 @@ describe("createVirtualAlias", () => {
 type FakePi = {
   calls: string[];
   failRegistrationFor: Set<string>;
+  failNextRegistrationFor: Set<string>;
   api: {
     registerVirtualModel: (model: { provider: string; id: string }) => void;
     unregisterVirtualModel: (provider: string, id: string) => void;
@@ -116,10 +117,14 @@ type FakePi = {
 
 function fakePi(failRegistrationFor = new Set<string>()): FakePi {
   const calls: string[] = [];
+  const failNextRegistrationFor = new Set<string>();
   const api = {
     registerVirtualModel(model: { provider: string; id: string }) {
       calls.push(`register:${model.provider}/${model.id}`);
       if (failRegistrationFor.has(model.id)) {
+        throw new Error(`cannot register ${model.id}`);
+      }
+      if (failNextRegistrationFor.delete(model.id)) {
         throw new Error(`cannot register ${model.id}`);
       }
     },
@@ -127,7 +132,7 @@ function fakePi(failRegistrationFor = new Set<string>()): FakePi {
       calls.push(`unregister:${provider}/${id}`);
     },
   };
-  return { calls, failRegistrationFor, api };
+  return { calls, failRegistrationFor, failNextRegistrationFor, api };
 }
 
 const fast: ModelAlias = {
@@ -144,7 +149,7 @@ describe("AliasRuntime", () => {
     const pi = fakePi();
     const runtime = new AliasRuntime(pi.api as never);
 
-    expect(runtime.initialize([alias, fast])).toEqual({ errors: [] });
+    expect(runtime.initialize([alias, fast])).toEqual({ errors: [], converged: true });
     expect(pi.calls).toEqual(["register:aliases/smart", "register:aliases/fast"]);
   });
 
@@ -154,7 +159,7 @@ describe("AliasRuntime", () => {
     runtime.initialize([alias]);
     pi.calls.length = 0;
 
-    expect(runtime.reconcile([alias])).toEqual({ errors: [] });
+    expect(runtime.reconcile([alias])).toEqual({ errors: [], converged: true });
     expect(pi.calls).toEqual([]);
   });
 
@@ -172,7 +177,7 @@ describe("AliasRuntime", () => {
       name: "smart",
       target: { provider: "zai", model: "glm-5.4" },
     };
-    expect(runtime.reconcile([retargeted, renamed])).toEqual({ errors: [] });
+    expect(runtime.reconcile([retargeted, renamed])).toEqual({ errors: [], converged: true });
     expect(pi.calls).toEqual([
       "unregister:aliases/fast",
       "unregister:aliases/old-name",
@@ -181,7 +186,7 @@ describe("AliasRuntime", () => {
     ]);
   });
 
-  it("attempts one full reconciliation after a failure and reports remaining errors while keeping the desired snapshot", () => {
+  it("attempts one full reconciliation after a failure and reports unresolved divergence", () => {
     const pi = fakePi();
     const runtime = new AliasRuntime(pi.api as never);
     runtime.initialize([alias]);
@@ -200,6 +205,24 @@ describe("AliasRuntime", () => {
       "register:aliases/smart",
     ]);
     expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.converged).toBe(false);
+    expect(runtime.snapshot()).toEqual([desired]);
+  });
+
+  it("reports recovered convergence when full reconciliation repairs an incremental failure", () => {
+    const pi = fakePi();
+    const runtime = new AliasRuntime(pi.api as never);
+    runtime.initialize([alias]);
+    pi.failNextRegistrationFor.add("smart");
+    pi.calls.length = 0;
+
+    const desired: ModelAlias = {
+      name: "smart",
+      target: { provider: "zai", model: "glm-5.4" },
+    };
+    const result = runtime.reconcile([desired]);
+
+    expect(result).toEqual({ errors: [], converged: true });
     expect(runtime.snapshot()).toEqual([desired]);
   });
 });
@@ -252,7 +275,7 @@ const selectedAliasModel: FakeModel = {
 const replacementAliasModel: FakeModel = {
   api: VIRTUAL_MODEL_API,
   id: "new-name",
-  name: "new-name (zai/glm-5.4)",
+  name: "new-name (zai/glm-5.3)",
   provider: ALIAS_PROVIDER,
 };
 
@@ -334,6 +357,26 @@ describe("reconcileActiveSelection", () => {
     );
 
     expect(warning).toMatch(/new-name.*unavailable|not found/i);
+    expect(state.setModelCalls).toEqual([]);
+  });
+
+  it("warns when a replacement registration still points at the old target", async () => {
+    const staleReplacement = {
+      ...selectedAliasModel,
+      name: "smart (zai/glm-5.3)",
+    };
+    const state = selectionState(selectedAliasModel, [staleReplacement]);
+    const warning = await reconcileActiveSelection(
+      state.pi as never,
+      state.ctx as never,
+      {
+        kind: "retarget",
+        before: alias,
+        after: { ...alias, target: { provider: "zai", model: "glm-5.4" } },
+      },
+    );
+
+    expect(warning).toMatch(/smart.*zai\/glm-5\.4.*registration|target/i);
     expect(state.setModelCalls).toEqual([]);
   });
 

@@ -3,6 +3,7 @@ import type {
   ExtensionCommandContext,
 } from "@earendil-works/pi-coding-agent";
 import type { Api, Model } from "@earendil-works/pi-ai";
+import { CURSOR_MARKER } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import {
   addAlias,
@@ -241,7 +242,7 @@ function managerHarness(options: {
   const runtime = {
     reconcile(aliases: readonly ModelAlias[]) {
       events.push(`runtime:${aliases.map((alias) => alias.name).join(",")}`);
-      return { errors: runtimeErrors };
+      return { errors: runtimeErrors, converged: runtimeErrors.length === 0 };
     },
   };
   const registry = {
@@ -322,7 +323,13 @@ function managerHarness(options: {
 }
 
 const selectedSmart = model("aliases", "smart", "pi-virtual", "Smart alias");
-const selectedRenamed = model("aliases", "renamed", "pi-virtual", "Renamed alias");
+const selectedRetargeted = model(
+  "aliases",
+  "smart",
+  "pi-virtual",
+  "smart (anthropic/claude-sonnet-4)",
+);
+const selectedRenamed = model("aliases", "renamed", "pi-virtual", "renamed (zai/glm-5.3)");
 const glm = model("zai", "glm-5.3", "openai-completions", "GLM 5.3");
 const claude = model(
   "anthropic",
@@ -354,7 +361,7 @@ describe("public manager UI", () => {
       matches(data: string, binding: string) {
         return (
           (binding === "tui.select.up" && data === "up") ||
-          (binding === "tui.select.down" && data === "down") ||
+          (binding === "tui.select.down" && data === "\u001b[B") ||
           (binding === "tui.select.confirm" && data === "\r") ||
           (binding === "tui.select.cancel" && data === "\u001b")
         );
@@ -393,17 +400,101 @@ describe("public manager UI", () => {
     };
   }
 
-  it("searches targets by provider, ID, and display name", async () => {
-    const harness = customHarness();
-    const target = model("anthropic", "claude-sonnet-4", "anthropic-messages", "Claude Sonnet");
-    const ui = createManagerUI(harness.ctx);
-    const selected = ui.selectTarget([target]);
+  it.each(["anthropic", "claude-sonnet-4", "Claude Sonnet"] as const)(
+    "searches targets by %s independently",
+    async (query) => {
+      const harness = customHarness();
+      const target = model(
+        "anthropic",
+        "claude-sonnet-4",
+        "anthropic-messages",
+        "Claude Sonnet",
+      );
+      const ui = createManagerUI(harness.ctx);
+      const selected = ui.selectTarget([target]);
 
-    const component = harness.getComponent();
-    component.handleInput?.("s");
+      const component = harness.getComponent();
+      for (const character of query) component.handleInput?.(character);
+      component.handleInput?.("\r");
+
+      expect(await selected).toBe(target);
+    },
+  );
+
+  it("navigates configured aliases and supports cancellation", async () => {
+    const navigation = customHarness();
+    const ui = createManagerUI(navigation.ctx);
+    const selected = ui.selectAlias(
+      { aliases: [smart, fast], diagnostics: [], fatal: false },
+      new Set(["zai/glm-5.3", "openai/gpt-4.1-mini"]),
+    );
+    const component = navigation.getComponent();
+    component.handleInput?.("\u001b[B");
+    component.handleInput?.("\u001b[B");
     component.handleInput?.("\r");
+    await expect(selected).resolves.toEqual(fast);
 
-    expect(await selected).toBe(target);
+    const cancellation = customHarness();
+    const cancelled = createManagerUI(cancellation.ctx).selectAlias(
+      { aliases: [smart], diagnostics: [], fatal: false },
+      new Set(["zai/glm-5.3"]),
+    );
+    cancellation.getComponent().handleInput?.("\u001b");
+    await expect(cancelled).resolves.toBeUndefined();
+  });
+
+  it("propagates focus to the search input", () => {
+    const harness = customHarness();
+    const picker = createManagerUI(harness.ctx).selectTarget([model("zai", "glm")]);
+    void picker;
+    const component = harness.getComponent() as unknown as {
+      focused: boolean;
+      render(width: number): string[];
+    };
+
+    component.focused = true;
+    expect(component.render(80).join("\n")).toContain(CURSOR_MARKER);
+    component.focused = false;
+    expect(component.render(80).join("\n")).not.toContain(CURSOR_MARKER);
+  });
+
+  it("shows diagnostics and unavailable aliases before selection", async () => {
+    const harness = customHarness();
+    const selected = createManagerUI(harness.ctx).selectAlias(
+      {
+        aliases: [fast],
+        diagnostics: [{ path: "aliases[1].name", message: "invalid alias name" }],
+        fatal: false,
+      },
+      new Set(["zai/glm-5.3"]),
+    );
+    const component = harness.getComponent();
+    const rendered = component.render(120).join("\n");
+
+    expect(rendered).toContain("Configuration diagnostics:");
+    expect(rendered).toContain("aliases[1].name: invalid alias name");
+    expect(rendered).toContain("openai/gpt-4.1-mini (unavailable)");
+
+    component.handleInput?.("\u001b");
+    await expect(selected).resolves.toBeUndefined();
+  });
+
+  it("always confirms the normalized full alias ID", async () => {
+    const prompts: string[] = [];
+    const ctx = {
+      ui: {
+        async input() {
+          return "fast";
+        },
+        async confirm(title: string, message: string) {
+          prompts.push(`${title}: ${message}`);
+          return true;
+        },
+      },
+    } as never;
+
+    await expect(createManagerUI(ctx).inputName("Add model alias")).resolves.toBe("fast");
+    expect(prompts).toEqual(["Add model alias: Use aliases/fast?"]);
   });
 
   it("shows the normalized alias name before accepting a name change", async () => {
@@ -453,7 +544,7 @@ describe("runAliasManager", () => {
   });
 
   it.each([
-    ["retarget", "retarget", [selectedSmart, claude], "selection:aliases/smart"],
+    ["retarget", "retarget", [selectedRetargeted, claude], "selection:aliases/smart"],
     ["rename", "rename", [selectedSmart, selectedRenamed], "selection:aliases/renamed"],
     ["remove", "remove", [selectedSmart, glm], "selection:zai/glm-5.3"],
   ] as const)(
@@ -535,6 +626,23 @@ describe("runAliasManager", () => {
       message: "Could not save model aliases: disk full",
       kind: "error",
     });
+  });
+
+  it("does not refresh the active selection while runtime remains divergent", async () => {
+    let aliasSelections = 0;
+    const harness = managerHarness({
+      currentModel: selectedSmart,
+      ui: {
+        selectAlias: async () => (aliasSelections++ === 0 ? smart : undefined),
+        selectAction: async () => "remove",
+        confirmRemove: async () => true,
+      },
+    });
+    harness.setRuntimeErrors(["registration failed"]);
+
+    await runAliasManager(harness.deps, harness.ctx);
+
+    expect(harness.events.some((event) => event.startsWith("selection:"))).toBe(false);
   });
 
   it("reports runtime divergence after the committed write with reload guidance", async () => {
