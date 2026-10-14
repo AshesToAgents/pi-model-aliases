@@ -9,6 +9,7 @@ import {
   addAlias,
   filterPhysicalTargets,
   formatAliasReport,
+  INVALID_NAME_ERROR,
   removeAlias,
   renameAlias,
   retargetAlias,
@@ -514,6 +515,70 @@ describe("public manager UI", () => {
     await expect(createManagerUI(ctx).inputName("Add model alias")).resolves.toBe(" Fast ");
     expect(prompts).toEqual(["Add model alias: Use aliases/fast?"]);
   });
+
+  it("notifies and re-prompts until a name normalizes", async () => {
+    const inputs = ["Bad Name!", "good"];
+    const placeholders: Array<string | undefined> = [];
+    const notifications: Array<{ message: string; kind: string }> = [];
+    const ctx = {
+      ui: {
+        async input(_title: string, placeholder?: string) {
+          placeholders.push(placeholder);
+          return inputs.length > 0 ? inputs.shift() : undefined;
+        },
+        async confirm() {
+          return true;
+        },
+        notify(message: string, kind: string) {
+          notifications.push({ message, kind });
+        },
+      },
+    } as never;
+
+    await expect(createManagerUI(ctx).inputName("Add model alias")).resolves.toBe("good");
+    expect(notifications).toEqual([{ message: INVALID_NAME_ERROR, kind: "error" }]);
+    expect(placeholders).toEqual([undefined, "Bad Name!"]);
+  });
+
+  it("re-prompts after declining the normalized name instead of cancelling", async () => {
+    const inputs = ["fast", "quick"];
+    const confirms: string[] = [];
+    const ctx = {
+      ui: {
+        async input() {
+          return inputs.length > 0 ? inputs.shift() : undefined;
+        },
+        async confirm(_title: string, message: string) {
+          confirms.push(message);
+          return confirms.length > 1;
+        },
+        notify() {},
+      },
+    } as never;
+
+    await expect(createManagerUI(ctx).inputName("Add model alias")).resolves.toBe("quick");
+    expect(confirms).toEqual(["Use aliases/fast?", "Use aliases/quick?"]);
+  });
+
+  it("cancels when a re-prompted name is cancelled", async () => {
+    const inputs = ["fast"];
+    let inputCalls = 0;
+    const ctx = {
+      ui: {
+        async input() {
+          inputCalls += 1;
+          return inputs.length > 0 ? inputs.shift() : undefined;
+        },
+        async confirm() {
+          return false;
+        },
+        notify() {},
+      },
+    } as never;
+
+    await expect(createManagerUI(ctx).inputName("Add model alias")).resolves.toBeUndefined();
+    expect(inputCalls).toBe(2);
+  });
 });
 
 describe("runAliasManager", () => {
@@ -754,17 +819,27 @@ describe("runAliasManager", () => {
     expect(seenTargetLists[0]).toEqual([claude]);
   });
 
-  it("emits a report without creating custom UI outside TUI mode", async () => {
-    const harness = managerHarness({ mode: "print" });
+  it("notifies about a duplicate add immediately without opening the target picker", async () => {
+    let aliasSelections = 0;
+    let targetPickerCalls = 0;
+    const harness = managerHarness({
+      ui: {
+        selectAlias: async () => (aliasSelections++ === 0 ? "add" : undefined),
+        inputName: async () => " Smart ",
+        selectTarget: async () => {
+          targetPickerCalls += 1;
+          return undefined;
+        },
+      },
+    });
 
     await runAliasManager(harness.deps, harness.ctx);
 
-    expect(harness.events).not.toContain("createUI");
-    expect(harness.notifications).toHaveLength(1);
-    expect(harness.notifications[0]).toEqual({
-      message:
-        "Model aliases:\n- aliases/smart -> zai/glm-5.3\n\nAlias management requires interactive TUI mode.",
-      kind: "info",
+    expect(targetPickerCalls).toBe(0);
+    expect(harness.events.some((event) => event.startsWith("write:"))).toBe(false);
+    expect(harness.notifications).toContainEqual({
+      message: 'Alias "smart" already exists.',
+      kind: "error",
     });
   });
 });

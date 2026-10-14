@@ -11,7 +11,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { KeybindingsManager, Theme } from "@earendil-works/pi-coding-agent";
 import { normalizeAliasName } from "./config.js";
-import type { AliasManagerUI } from "./manager.js";
+import { INVALID_NAME_ERROR, type AliasManagerUI } from "./manager.js";
 import type { LoadedAliasConfig, ModelAlias } from "./types.js";
 
 interface PickerItem<T> {
@@ -101,11 +101,11 @@ class SearchPicker<T> implements Component {
     const visibleItems = this.items.filter((item) =>
       item.searchText.toLowerCase().includes(normalizedQuery),
     );
+    // SelectList filters by `value.startsWith(filter)` when setFilter() is
+    // called; items are already filtered here, so the list is constructed with
+    // exactly the visible items and its internal filter stays untouched.
     const selectItems: SelectItem[] = visibleItems.map((item) => ({
-      value:
-        normalizedQuery === ""
-          ? item.key
-          : `${normalizedQuery}\u0000${item.key}`,
+      value: item.key,
       label: item.label,
       description: item.description,
     }));
@@ -114,11 +114,8 @@ class SearchPicker<T> implements Component {
       Math.min(Math.max(selectItems.length, 1), 10),
       pickerTheme(this.theme),
     );
-    list.setFilter(normalizedQuery);
     list.onSelect = (selected) => {
-      const separator = selected.value.indexOf("\u0000");
-      const key = separator < 0 ? selected.value : selected.value.slice(separator + 1);
-      const item = this.items.find((candidate) => candidate.key === key);
+      const item = this.items.find((candidate) => candidate.key === selected.value);
       if (item) this.done(item.value);
     };
     list.onCancel = () => this.done(undefined);
@@ -189,15 +186,25 @@ export function createManagerUI(ctx: ExtensionCommandContext): AliasManagerUI {
     },
 
     async inputName(title, initial) {
-      const value = await ctx.ui.input(title, initial);
-      if (value === undefined) return undefined;
+      let placeholder = initial;
+      while (true) {
+        const value = await ctx.ui.input(title, placeholder);
+        if (value === undefined) {
+          return undefined;
+        }
 
-      const normalized = normalizeAliasName(value);
-      if (normalized !== undefined) {
-        const accepted = await ctx.ui.confirm(title, `Use aliases/${normalized}?`);
-        if (!accepted) return undefined;
+        const normalized = normalizeAliasName(value);
+        if (normalized === undefined) {
+          ctx.ui.notify(INVALID_NAME_ERROR, "error");
+          placeholder = value;
+          continue;
+        }
+
+        if (await ctx.ui.confirm(title, `Use aliases/${normalized}?`)) {
+          return value;
+        }
+        placeholder = value;
       }
-      return value;
     },
 
     async selectTarget(models: readonly Model<Api>[]) {

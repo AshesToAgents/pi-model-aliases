@@ -16,11 +16,15 @@ export type AliasMutationResult =
   | { ok: true; aliases: ModelAlias[]; change?: AliasSelectionChange }
   | { ok: false; error: string };
 
-const INVALID_NAME_ERROR =
+export const INVALID_NAME_ERROR =
   "Alias name must match ^[a-z0-9][a-z0-9._-]*$ after normalization.";
 
 function duplicateError(name: string): AliasMutationResult {
   return { ok: false, error: `Alias "${name}" already exists.` };
+}
+
+function duplicateMessage(name: string): string {
+  return `Alias "${name}" already exists.`;
 }
 
 function missingError(name: string): AliasMutationResult {
@@ -236,10 +240,19 @@ async function chooseMutation(
   ui: AliasManagerUI,
   selection: ModelAlias | "add",
   ctx: ExtensionCommandContext,
+  currentAliases: readonly ModelAlias[],
 ): Promise<PendingMutation | undefined> {
   if (selection === "add") {
     const name = await ui.inputName("Add model alias");
     if (name === undefined) {
+      return undefined;
+    }
+    const normalized = normalizeAliasName(name);
+    if (
+      normalized !== undefined &&
+      currentAliases.some((alias) => alias.name === normalized)
+    ) {
+      ui.notify(duplicateMessage(normalized), "error");
       return undefined;
     }
     const targets = filterPhysicalTargets(ctx.modelRegistry.getAvailable());
@@ -287,13 +300,6 @@ export async function runAliasManager(
   deps: AliasManagerDependencies,
   ctx: ExtensionCommandContext,
 ): Promise<void> {
-  if (ctx.mode !== "tui") {
-    const config = deps.load(deps.configPath);
-    const targets = filterPhysicalTargets(ctx.modelRegistry.getAvailable());
-    ctx.ui.notify(formatAliasReport(config, availableTargetIds(targets)), "info");
-    return;
-  }
-
   const ui = deps.createUI(ctx);
   while (true) {
     const config = deps.load(deps.configPath);
@@ -303,7 +309,7 @@ export async function runAliasManager(
       return;
     }
 
-    const pending = await chooseMutation(ui, selection, ctx);
+    const pending = await chooseMutation(ui, selection, ctx, config.aliases);
     if (pending === undefined) {
       continue;
     }

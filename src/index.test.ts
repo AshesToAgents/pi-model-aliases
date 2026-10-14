@@ -74,9 +74,12 @@ function fakeExtension(availableModels: Model<Api>[]): FakeExtension {
   return extension;
 }
 
-function commandContext(availableModels: Model<Api>[]): ExtensionCommandContext {
+function commandContext(
+  availableModels: Model<Api>[],
+  mode: "print" | "rpc" = "print",
+): ExtensionCommandContext {
   return {
-    mode: "print",
+    mode,
     model: undefined,
     modelRegistry: {
       getAvailable: () => availableModels,
@@ -129,18 +132,25 @@ describe("activateModelAliases", () => {
     expect(extension.commands.has("model-aliases")).toBe(true);
   });
 
-  it("sends the alias report through pi.sendMessage without opening custom UI in non-TUI mode", async () => {
+  it("prints the report to stdout and sends it as a custom message in print mode", async () => {
     const path = configFile([
       { name: "smart", target: { provider: "zai", model: "glm-5.3" } },
     ]);
     const extension = fakeExtension([model("zai", "glm-5.3", "GLM 5.3")]);
-    activateModelAliases(extension.api, { configPath: path });
+    const written: string[] = [];
+    activateModelAliases(extension.api, {
+      configPath: path,
+      writeOutput: (text) => written.push(text),
+    });
 
     await extension.commands.get("model-aliases")!.handler(
       "",
       commandContext([model("zai", "glm-5.3", "GLM 5.3")]),
     );
 
+    expect(written).toHaveLength(1);
+    expect(written[0]).toContain("aliases/smart -> zai/glm-5.3");
+    expect(written[0]!.endsWith("\n")).toBe(true);
     expect(extension.messages).toHaveLength(1);
     expect(extension.messages[0]).toMatchObject({
       customType: "model-aliases",
@@ -149,6 +159,30 @@ describe("activateModelAliases", () => {
     expect(extension.messages[0]!.content).toContain(
       "aliases/smart -> zai/glm-5.3",
     );
+  });
+
+  it("sends the report without writing stdout outside print mode", async () => {
+    const path = configFile([
+      { name: "smart", target: { provider: "zai", model: "glm-5.3" } },
+    ]);
+    const extension = fakeExtension([model("zai", "glm-5.3", "GLM 5.3")]);
+    const written: string[] = [];
+    activateModelAliases(extension.api, {
+      configPath: path,
+      writeOutput: (text) => written.push(text),
+    });
+
+    await extension.commands.get("model-aliases")!.handler(
+      "",
+      commandContext([model("zai", "glm-5.3", "GLM 5.3")], "rpc"),
+    );
+
+    expect(written).toEqual([]);
+    expect(extension.messages).toHaveLength(1);
+    expect(extension.messages[0]).toMatchObject({
+      customType: "model-aliases",
+      display: true,
+    });
   });
 
   it("uses the persisted file as the source of truth for each fresh extension instance", () => {

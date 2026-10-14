@@ -55,7 +55,7 @@ Configured targets are resolved when a request is routed. If a target is missing
 
 ## Non-interactive use
 
-In print, RPC, and other non-TUI modes, `/model-aliases` does not open custom UI. It emits a report through Pi's custom-message channel, including configured aliases, unavailable targets, configuration diagnostics, and the instruction to use TUI mode for management.
+In print, RPC, JSON, and other non-TUI modes, `/model-aliases` does not open custom UI. It emits a report through Pi's custom-message channel, including configured aliases, unavailable targets, and configuration diagnostics. In print mode the report is also written to stdout, so `pi --print '/model-aliases'` shows it directly. Alias management requires interactive TUI mode.
 
 ## Development
 
